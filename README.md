@@ -32,7 +32,7 @@ The solution consists of two main components:
 # Deploy the AMI builder CloudFormation stack
 aws cloudformation create-stack \
   --stack-name hail-ami-builder \
-  --template-body file://simplified-ami-builder-manual-parameterized.yaml \
+  --template-body file://simplified-ami-builder.yaml \
   --parameters \
     ParameterKey=AmiName,ParameterValue=hail-emr-ami \
     ParameterKey=HailVersion,ParameterValue=0.2.134 \
