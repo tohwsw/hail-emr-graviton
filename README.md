@@ -1,6 +1,6 @@
 # EMR Cluster Provisioning with Hail Support on AWS
 
-This project automates the deployment of Amazon EMR clusters optimized for genomic data analysis using Hail. It provides infrastructure-as-code templates for creating custom AMIs and provisioning EMR clusters with Spot and AWS Graviton instances for cost-effective processing of large-scale genetic data.
+This project automates the deployment of Amazon EMR clusters optimized for genomic data analysis using Hail. It provides infrastructure-as-code templates for creating custom AMIs and provisioning EMR clusters with Spot and AWS Graviton instances for cost-effective processing of large-scale genetic data. The solution has been tested with EMR version 7.5.0 and Hail 0.2.134.
 
 The solution consists of two main components:
 1. A custom AMI builder that creates an Amazon Linux 2023 ARM64 image pre-configured with Hail dependencies
@@ -68,8 +68,7 @@ aws cloudformation create-stack \
   --template-body file://install-emr.yaml
 ```
 
-4. Test the cluster with a hail job:
-Create hail-script.py with the following content:
+4. Test the cluster with a hail job. Create hail-script.py with the following content:
 ```bash
 import hail as hl
 mt = hl.balding_nichols_model(n_populations=3,
@@ -83,7 +82,7 @@ covariates=[1.0])
 gwas.order_by(gwas.p_value).show(25)
 ```
 
-Login to the cluster primary node as Hadoop user
+5. Login to the cluster primary node as Hadoop user and run the spark job.
 
 ```bash
 export HADOOP_CONF_DIR=/etc/hadoop/conf
