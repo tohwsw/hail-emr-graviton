@@ -68,7 +68,7 @@ aws cloudformation create-stack \
   --template-body file://install-emr.yaml
 ```
 
-4. Test the cluster with a hail job. Create hail-script.py with the following content:
+4. Test the cluster with a Hail job. Login to the cluster primary node as Hadoop user and create hail-script.py with the following content:
 ```bash
 import hail as hl
 mt = hl.balding_nichols_model(n_populations=3,
@@ -82,7 +82,7 @@ covariates=[1.0])
 gwas.order_by(gwas.p_value).show(25)
 ```
 
-5. Login to the cluster primary node as Hadoop user and run the spark job.
+5. Run the spark job.
 
 ```bash
 export HADOOP_CONF_DIR=/etc/hadoop/conf
