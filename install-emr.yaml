@@ -1,0 +1,174 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "EMR cluster with Spot and Graviton instances"
+
+Parameters:
+  EMRClusterName:
+    Type: String
+    Default: "emr-hail-cluster"
+    Description: "Name of the EMR cluster"
+  
+  ReleaseLabel:
+    Type: String
+    Default: "emr-7.5.0"
+    Description: "EMR release version"
+  
+  SpotBidPercentage:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 100
+    Description: "Maximum Spot bid as a percentage of On-Demand price"
+
+  CustomAmiID:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: "/ami/AL2023-arm64-hail/latest"
+    Description: "Custom AMI ID from Parameter Store"
+    
+  ServiceRoleName:
+    Type: String
+    Default: "EMR_DefaultRole_V2"
+    Description: "Name of the existing EMR service role"
+    
+  JobFlowRoleName:
+    Type: String
+    Default: "EMR_EC2_DefaultRole"
+    Description: "Name of the existing EMR EC2 instance profile"
+
+Resources:
+  EMRCluster:
+    Type: AWS::EMR::Cluster
+    Properties:
+      Name: !Ref EMRClusterName
+      ReleaseLabel: !Ref ReleaseLabel
+      CustomAmiId: !Ref CustomAmiID
+      ServiceRole: !Ref ServiceRoleName
+      JobFlowRole: !Ref JobFlowRoleName
+      VisibleToAllUsers: true
+      Applications:
+        - Name: Spark
+        - Name: Livy
+        - Name: Hadoop
+        - Name: JupyterHub
+      Configurations:
+        - Classification: "hadoop-env"
+          Configurations:
+            - Classification: "export"
+              ConfigurationProperties:
+                "JAVA_HOME": "/usr/lib/jvm/java-11-amazon-corretto.aarch64"
+        - Classification: "spark-env"
+          Configurations:
+            - Classification: "export"
+              ConfigurationProperties:
+                "JAVA_HOME": "/usr/lib/jvm/java-11-amazon-corretto.aarch64"
+        - Classification: "spark-defaults"
+          ConfigurationProperties:
+            "spark.jars": "/usr/local/lib/python3.9/site-packages/hail/backend/hail-all-spark.jar"
+            "spark.driver.extraClassPath": "/usr/lib/hadoop/lib/native:/usr/lib/hadoop-lzo/lib/native:/usr/lib/jvm/java-11-amazon-corretto.aarch64/lib/server:/docker/usr/lib/hadoop/lib/native:/docker/usr/lib/hadoop-lzo/lib/naive:/docker/usr/lib/jvm/java-11-amazon-corretto.aarch64/lib/server:/usr/local/lib/python3.9/site-packages/hail/backend/hail-all-spark.jar"
+            "spark.executor.extraClassPath": "/usr/lib/hadoop/lib/native:/usr/lib/hadoop-lzo/lib/native:/usr/lib/jvm/java-11-amazon-corretto.aarch64/lib/server:/docker/usr/lib/hadoop/lib/native:/docker/usr/lib/hadoop-lzo/lib/naive:/docker/usr/lib/jvm/java-11-amazon-corretto.aarch64/lib/server:/usr/local/lib/python3.9/site-packages/hail/backend/hail-all-spark.jar"
+            "spark.serializer": "org.apache.spark.serializer.KryoSerializer"
+            "spark.kryo.registrator": "is.hail.kryo.HailKryoRegistrator"
+      Instances:
+        MasterInstanceFleet:
+          Name: Master
+          TargetOnDemandCapacity: 1
+          InstanceTypeConfigs:
+            - InstanceType: m6g.xlarge
+              WeightedCapacity: 1
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+
+        CoreInstanceFleet:
+          Name: Core
+          TargetSpotCapacity: 2
+          TargetOnDemandCapacity: 0
+          LaunchSpecifications:
+            SpotSpecification:
+              TimeoutDurationMinutes: 20
+              TimeoutAction: SWITCH_TO_ON_DEMAND
+              AllocationStrategy: "PRICE_CAPACITY_OPTIMIZED"
+          InstanceTypeConfigs:
+            - InstanceType: r6g.xlarge
+              WeightedCapacity: 1
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+            - InstanceType: r6g.2xlarge
+              WeightedCapacity: 2
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+            - InstanceType: r6g.4xlarge
+              WeightedCapacity: 4
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+            - InstanceType: r6g.8xlarge
+              WeightedCapacity: 8
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+            - InstanceType: r7g.xlarge
+              WeightedCapacity: 1
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+            - InstanceType: r7g.2xlarge
+              WeightedCapacity: 2
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+            - InstanceType: r7g.4xlarge
+              WeightedCapacity: 4
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+            - InstanceType: r7g.8xlarge
+              WeightedCapacity: 8
+              BidPriceAsPercentageOfOnDemandPrice: !Ref SpotBidPercentage
+              EbsConfiguration:
+                EbsBlockDeviceConfigs:
+                  - VolumeSpecification:
+                      SizeInGB: 100
+                      VolumeType: gp3
+                EbsOptimized: true
+
+      Tags:
+        - Key: Environment
+          Value: Development
+
+Outputs:
+  ClusterId:
+    Description: EMR Cluster ID
+    Value: !Ref EMRCluster

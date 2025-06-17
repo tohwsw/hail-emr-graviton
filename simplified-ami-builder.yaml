@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template to create an AL2023 arm64 AMI using AWS CodeBuild with Packer (Manual Build Trigger)'
+
+Parameters:
+  SourceAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Source Amazon Linux 2023 arm64 AMI ID
+
+  InstanceType:
+    Type: String
+    Default: c7g.large
+    Description: EC2 instance type for building the AMI (must be arm64 compatible)
+    AllowedValues:
+      - c7g.large
+      - c7g.xlarge
+      - m7g.large
+      - m7g.xlarge
+      - r7g.large
+      - t4g.large
+
+  AmiName:
+    Type: String
+    Default: AL2023-arm64-hail
+    Description: Name for the output AMI
+
+  HailVersion:
+    Type: String
+    Default: 0.2.134
+    Description: Version of Hail to install
+
+Resources:
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: S3UploadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+
+  FileUploadFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LambdaExecutionRole
+    Properties:
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Runtime: python3.9
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+          
+          def handler(event, context):
+              if event['RequestType'] == 'Create' or event['RequestType'] == 'Update':
+                  try:
+                      s3 = boto3.client('s3')
+                      bucket = event['ResourceProperties']['Bucket']
+                      key = event['ResourceProperties']['Key']
+                      body = event['ResourceProperties']['Body']
+                      
+                      s3.put_object(
+                          Bucket=bucket,
+                          Key=key,
+                          Body=body
+                      )
+                      
+                      responseData = {
+                          'BucketName': bucket,
+                          'ObjectKey': key,
+                          'ObjectUrl': f"https://{bucket}.s3.amazonaws.com/{key}"
+                      }
+                      cfnresponse.send(event, context, cfnresponse.SUCCESS, responseData)
+                  except Exception as e:
+                      print(f"Error: {str(e)}")
+                      cfnresponse.send(event, context, cfnresponse.FAILED, {'Error': str(e)})
+              else:  # Delete
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+  BootstrapUpload:
+    Type: Custom::S3Upload
+    DependsOn: [ArtifactBucket, FileUploadFunction]
+    Properties:
+      ServiceToken: !GetAtt FileUploadFunction.Arn
+      Bucket: !Ref ArtifactBucket
+      Key: bootstrap.sh
+      Body: !Sub |
+        #!/bin/bash
+        set -e  # Exit on error
+
+        # Stop and disable SSM agent
+        systemctl stop amazon-ssm-agent
+        systemctl disable amazon-ssm-agent
+
+        # Install and configure Java
+        yum install -y java-11-amazon-corretto-devel
+        update-alternatives --set java /usr/lib/jvm/java-11-amazon-corretto.aarch64/bin/java
+        update-alternatives --set javac /usr/lib/jvm/java-11-amazon-corretto.aarch64/bin/javac
+
+        # Install Python and dependencies
+        yum install -y python3-devel python3-pip
+        yum install -y lz4 lz4-devel openblas openblas-devel lapack lapack-devel
+
+        # Remove conflicting package
+        yum remove -y python3-requests
+
+        # Install Hail
+        python3 -m pip install hail==${HailVersion}
+
+        # Install cloud-init packages
+        yum install -y cloud-init
+        yum install -y cloud-init-cfg-ec2
+
+        # Verify installations
+        java -version
+        python3 -m pip show hail
+        echo "All installations completed successfully"
+
+        # Exit with success
+        exit 0
+
+  PackerTemplateUpload:
+    Type: Custom::S3Upload
+    DependsOn: [ArtifactBucket, FileUploadFunction]
+    Properties:
+      ServiceToken: !GetAtt FileUploadFunction.Arn
+      Bucket: !Ref ArtifactBucket
+      Key: packer-template.pkr.hcl
+      Body: |
+        packer {
+          required_version = ">= 1.7.0"
+        }
+
+        variable "ami_name" {
+          type    = string
+          default = "AMI_NAME_PLACEHOLDER"
+        }
+
+        variable "source_ami" {
+          type    = string
+          default = "SOURCE_AMI_PLACEHOLDER"
+        }
+
+        variable "instance_type" {
+          type    = string
+          default = "INSTANCE_TYPE_PLACEHOLDER"
+        }
+
+        variable "region" {
+          type    = string
+          default = "REGION_PLACEHOLDER"
+        }
+
+        variable "bootstrap_script_bucket" {
+          type    = string
+          default = "BOOTSTRAP_SCRIPT_PLACEHOLDER"
+        }
+
+        source "amazon-ebs" "al2023" {
+          ami_name        = "${var.ami_name}-${formatdate("YYYYMMDD-hhmm", timestamp())}"
+          instance_type   = var.instance_type
+          region          = var.region
+          source_ami      = var.source_ami
+          ssh_username    = "ec2-user"
+          ssh_agent_auth  = false
+          
+          launch_block_device_mappings {
+            device_name = "/dev/xvda"
+            volume_size = 100
+            volume_type = "gp3"
+            delete_on_termination = true
+          }
+          
+          tags = {
+            Name      = var.ami_name
+            BaseAMI   = var.source_ami
+            CreatedBy = "Packer-CloudFormation"
+          }
+        }
+
+        build {
+          sources = ["source.amazon-ebs.al2023"]
+
+          provisioner "shell" {
+            inline = [
+              "aws s3 cp s3://${var.bootstrap_script_bucket}/bootstrap.sh /tmp/bootstrap.sh",
+              "chmod +x /tmp/bootstrap.sh",
+              "sudo /tmp/bootstrap.sh"
+            ]
+          }
+        }
+
+  CodeBuildServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+      Policies:
+        - PolicyName: CodeBuildServiceRolePolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:*
+                  - iam:PassRole
+                  - iam:GetInstanceProfile
+                  - iam:GetRole
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:GetObjectVersion
+                  - s3:ListBucket
+                Resource: 
+                  - !Sub 'arn:aws:s3:::${ArtifactBucket}'
+                  - !Sub 'arn:aws:s3:::${ArtifactBucket}/*'
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:GetParameter
+                  - ssm:DeleteParameter
+                Resource: 
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/ami/${AmiName}/*'
+
+  CodeBuildProject:
+    Type: AWS::CodeBuild::Project
+    DependsOn: [BootstrapUpload, PackerTemplateUpload]
+    Properties:
+      Name: !Sub '${AWS::StackName}-ami-builder'
+      Description: 'Build AL2023 arm64 AMI with Packer'
+      ServiceRole: !GetAtt CodeBuildServiceRole.Arn
+      Artifacts:
+        Type: S3
+        Location: !Ref ArtifactBucket
+        Name: ami-build-output
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux2-aarch64-standard:2.0
+        PrivilegedMode: true
+        EnvironmentVariables:
+          - Name: ArtifactBucket
+            Value: !Ref ArtifactBucket
+          - Name: AmiName
+            Value: !Ref AmiName
+          - Name: SourceAmiId
+            Value: !Ref SourceAmiId
+          - Name: InstanceType
+            Value: !Ref InstanceType
+          - Name: Region
+            Value: !Ref "AWS::Region"
+      Source:
+        Type: S3
+        Location: !Sub "${ArtifactBucket}/buildspec.yml"
+        BuildSpec: buildspec.yml
+      TimeoutInMinutes: 60
+      Tags:
+        - Key: Purpose
+          Value: AMI-Builder
+
+Outputs:
+  CodeBuildProjectName:
+    Description: Name of the CodeBuild project
+    Value: !Ref CodeBuildProject
+  
+  ArtifactBucketName:
+    Description: Name of the S3 bucket storing build artifacts
+    Value: !Ref ArtifactBucket
+  
+  AMIParameterStore:
+    Description: SSM Parameter Store location for the latest AMI ID
+    Value: !Sub /ami/${AmiName}/latest
+  
+  ManualBuildCommand:
+    Description: Command to manually start the AMI build
+    Value: !Sub aws codebuild start-build --project-name ${CodeBuildProject}
+  
+  HailVersionInstalled:
+    Description: Version of Hail installed in the AMI
+    Value: !Ref HailVersion

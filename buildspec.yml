@@ -1,0 +1,36 @@
+version: 0.2
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+    commands:
+      - wget https://releases.hashicorp.com/packer/1.13.1/packer_1.13.1_linux_arm64.zip
+      - unzip packer_1.13.1_linux_arm64.zip
+      - mv packer /usr/local/bin
+      - chmod +x /usr/local/bin/packer
+      - packer --version
+  pre_build:
+    commands:
+      - echo "Downloading Packer template from S3"
+      - aws s3 cp s3://$ArtifactBucket/packer-template.pkr.hcl .
+      - sed -i "s/AMI_NAME_PLACEHOLDER/$AmiName/g" packer-template.pkr.hcl
+      - sed -i "s/SOURCE_AMI_PLACEHOLDER/$SourceAmiId/g" packer-template.pkr.hcl
+      - sed -i "s/INSTANCE_TYPE_PLACEHOLDER/$InstanceType/g" packer-template.pkr.hcl
+      - sed -i "s|REGION_PLACEHOLDER|$Region|g" packer-template.pkr.hcl
+      - sed -i "s|BOOTSTRAP_SCRIPT_PLACEHOLDER|$ArtifactBucket|g" packer-template.pkr.hcl
+      - cat packer-template.pkr.hcl
+  build:
+    commands:
+      - echo "Starting Packer build at $(date)"
+      - packer init .
+      - packer plugins install github.com/hashicorp/amazon
+      - packer build -color=false packer-template.pkr.hcl | tee build.log
+      - cat build.log
+      - "AMI_ID=$(grep -oP 'AMI\\: \\K[a-zA-Z0-9-]+' build.log | tail -1)"
+      - echo $AMI_ID > /tmp/ami-id.txt
+  post_build:
+    commands:
+      - echo "AMI build completed at $(date)"
+      - AMI_ID=$(cat /tmp/ami-id.txt)
+      - echo "Created AMI $AMI_ID"
+      - aws ssm put-parameter --name "/ami/${AmiName}/latest" --value "$AMI_ID" --type "String" --overwrite
